@@ -1,0 +1,17 @@
+{
+  "actorSpecification": 1,
+  "name": "ratemds-physician-scraper",
+  "version": "1.0",
+  "buildTag": "latest",
+  "dockerfile": "../Dockerfile",
+  "readme": "../README.md",
+  "input": "./input_schema.json",
+  "output": "./output_schema.json",
+  "nodeJsVersion": "22",
+  "meta": {
+    "generatedBy": "gpt-5-codex"
+  },
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  }
+}

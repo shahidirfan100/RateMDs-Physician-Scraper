@@ -1,0 +1,56 @@
+{
+  "title": "RateMDs Physician Scraper",
+  "description": "Scrape physician data from RateMDs.com. Provide a specialty or start URL to find doctors.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Start scraping from a specific RateMDs search URL.",
+      "editor": "textfield"
+    },
+    "specialty": {
+      "title": "Specialty",
+      "type": "string",
+      "description": "Medical specialty to search for (e.g., 'acupuncturist', 'cardiologist').",
+      "editor": "textfield",
+      "prefill": "acupuncturist"
+    },
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "City or region to search in.",
+      "editor": "textfield",
+      "prefill": "Toronto"
+    },
+    "results_wanted": {
+      "title": "Maximum number of physicians",
+      "type": "integer",
+      "description": "The maximum number of physicians to collect.",
+      "minimum": 1,
+      "default": 20,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of search result pages to visit.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 10
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy for reliable scraping.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}

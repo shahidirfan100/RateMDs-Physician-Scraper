@@ -1,0 +1,209 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "name": {
+      "title": "Name",
+      "type": "string",
+      "description": "Physician full name"
+    },
+    "specialty": {
+      "title": "Specialty",
+      "type": "string",
+      "description": "Specialty display name"
+    },
+    "specialty_slug": {
+      "title": "Specialty Slug",
+      "type": "string",
+      "description": "Specialty slug from internal payload"
+    },
+    "doctor_id": {
+      "title": "Doctor ID",
+      "type": "integer",
+      "description": "Internal doctor ID"
+    },
+    "doctor_slug": {
+      "title": "Doctor Slug",
+      "type": "string",
+      "description": "Internal doctor slug"
+    },
+    "rating": {
+      "title": "Rating",
+      "type": "number",
+      "description": "Average rating"
+    },
+    "review_count": {
+      "title": "Review Count",
+      "type": "integer",
+      "description": "Number of reviews"
+    },
+    "profile_url": {
+      "title": "Profile URL",
+      "type": "string",
+      "description": "Doctor profile URL"
+    },
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "City and province/state"
+    },
+    "address": {
+      "title": "Address",
+      "type": "string",
+      "description": "Normalized address"
+    },
+    "phone": {
+      "title": "Phone",
+      "type": "string",
+      "description": "Phone number"
+    },
+    "website": {
+      "title": "Website",
+      "type": "string",
+      "description": "Clinic website"
+    },
+    "verified": {
+      "title": "Verified",
+      "type": "boolean",
+      "description": "Whether the doctor is verified"
+    },
+    "accepting_patients": {
+      "title": "Accepting Patients",
+      "type": "boolean",
+      "description": "Accepting patients flag"
+    },
+    "appointments_enabled": {
+      "title": "Appointments Enabled",
+      "type": "boolean",
+      "description": "Appointments enabled flag"
+    },
+    "appointments_available": {
+      "title": "Appointments Available",
+      "type": "boolean",
+      "description": "Appointments available flag"
+    },
+    "accepting_virtual_appointments": {
+      "title": "Virtual Appointments",
+      "type": "boolean",
+      "description": "Virtual appointments flag"
+    },
+    "is_promoted_doctor": {
+      "title": "Promoted",
+      "type": "boolean",
+      "description": "Promoted doctor flag"
+    },
+    "page": {
+      "title": "Page",
+      "type": "integer",
+      "description": "Result page number"
+    },
+    "page_rank": {
+      "title": "Page Rank",
+      "type": "integer",
+      "description": "Doctor rank on the page"
+    },
+    "total_pages": {
+      "title": "Total Pages",
+      "type": "integer",
+      "description": "Total pages available for the query"
+    },
+    "total_results": {
+      "title": "Total Results",
+      "type": "integer",
+      "description": "Total results available for the query"
+    },
+    "list_page_url": {
+      "title": "List Page URL",
+      "type": "string",
+      "description": "Listing URL where doctor was captured"
+    },
+    "scraped_at": {
+      "title": "Scraped At",
+      "type": "string",
+      "description": "ISO timestamp"
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "name",
+          "specialty",
+          "rating",
+          "review_count",
+          "location",
+          "address",
+          "phone",
+          "website",
+          "verified",
+          "accepting_patients",
+          "appointments_enabled",
+          "page",
+          "page_rank",
+          "profile_url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "name": {
+            "label": "Name",
+            "format": "text"
+          },
+          "specialty": {
+            "label": "Specialty",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "number"
+          },
+          "review_count": {
+            "label": "Reviews",
+            "format": "number"
+          },
+          "location": {
+            "label": "Location",
+            "format": "text"
+          },
+          "address": {
+            "label": "Address",
+            "format": "text"
+          },
+          "phone": {
+            "label": "Phone",
+            "format": "text"
+          },
+          "website": {
+            "label": "Website",
+            "format": "link"
+          },
+          "verified": {
+            "label": "Verified",
+            "format": "boolean"
+          },
+          "accepting_patients": {
+            "label": "Accepting",
+            "format": "boolean"
+          },
+          "appointments_enabled": {
+            "label": "Appointments",
+            "format": "boolean"
+          },
+          "page": {
+            "label": "Page",
+            "format": "number"
+          },
+          "page_rank": {
+            "label": "Rank",
+            "format": "number"
+          },
+          "profile_url": {
+            "label": "Profile",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}
