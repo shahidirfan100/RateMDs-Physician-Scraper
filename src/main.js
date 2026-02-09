@@ -7,10 +7,10 @@ import { firefox } from 'playwright';
 const BASE_URL = 'https://www.ratemds.com';
 const DEFAULT_RESULTS_WANTED = 20;
 const DEFAULT_MAX_PAGES = 10;
-const DEFAULT_MAX_CONCURRENCY = 3;
+const DEFAULT_MAX_CONCURRENCY = 5;
 const DEFAULT_MAX_RETRIES = 4;
-const DEFAULT_DELAY_MIN_MS = 300;
-const DEFAULT_DELAY_MAX_MS = 1200;
+const DEFAULT_DELAY_MIN_MS = 60;
+const DEFAULT_DELAY_MAX_MS = 180;
 
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
@@ -126,53 +126,88 @@ const normalizeAddress = (location) => {
     return [strOrNull(location.address), suite, strOrNull(locality)].filter(Boolean).join(', ') || null;
 };
 
-const OMIT_INTERNAL_EXTRA_KEYS = new Set([
-    'id',
-    'slug',
-    'name',
-    'full_name',
-    'specialty',
-    'specialty_name',
-    'city_name',
-    'url',
-    'rating',
-    'sample_rating_comment',
-    'sample_rating_pk',
-    'location',
-    'default_location',
-    'doctor_locations_on_display',
-    'ga_provider_data',
-    'facet_url',
-    'full_name_specialty',
-    'full_name_possessive_form',
-    'verified',
-    'accepting_patients',
-    'accepting_virtual_appointments',
-    'appointments_enabled',
-    'appointments_available',
-    'ratings_disabled',
-    'is_promoted_doctor',
-]);
-
-const buildInternalDoctorExtra = (doctor) => {
-    if (!doctor || typeof doctor !== 'object') return null;
-    const extra = JSON.parse(JSON.stringify(doctor));
-
-    for (const key of OMIT_INTERNAL_EXTRA_KEYS) delete extra[key];
-
-    if (extra.rating && typeof extra.rating === 'object') {
-        delete extra.rating.distribution;
-        delete extra.rating.bestRating;
-    }
-
-    if (Array.isArray(extra.user_ratings)) delete extra.user_ratings;
-    if (Array.isArray(extra.ratings)) delete extra.ratings;
-
-    return Object.keys(extra).length ? extra : null;
+const normalizeClinicLocation = (location) => {
+    if (!location) return null;
+    const city = strOrNull(location.city?.name);
+    const province = strOrNull(location.city?.province_name) || strOrNull(location.city?.province_slug)?.toUpperCase();
+    const country = strOrNull(location.city?.country_name) || strOrNull(location.city?.country_slug)?.toUpperCase();
+    return {
+        location_id: toInt(location.id),
+        location_slug: strOrNull(location.slug),
+        location_name: strOrNull(location.name),
+        location_category: strOrNull(location.category),
+        address: normalizeAddress(location),
+        city,
+        province,
+        country,
+        postal_code: strOrNull(location.postal_code),
+        phone: strOrNull(location.doc_location_phone_number || location.phone_number),
+        website: strOrNull(location.website),
+        latitude: location.latitude ?? null,
+        longitude: location.longitude ?? null,
+        map_url: strOrNull(location.map),
+        location_url: toAbs(location.url),
+    };
 };
 
-const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRank, totalPages, totalResults, includeRawInternalData }) => {
+const collectClinicLocations = (doctor) => {
+    const sources = [
+        doctor?.location,
+        doctor?.default_location,
+        ...(Array.isArray(doctor?.doctor_locations_on_display) ? doctor.doctor_locations_on_display.map((x) => x?.location) : []),
+        ...(Array.isArray(doctor?.doctor_locations) ? doctor.doctor_locations.map((x) => x?.location) : []),
+    ];
+
+    const deduped = [];
+    const seen = new Set();
+    for (const location of sources) {
+        const normalized = normalizeClinicLocation(location);
+        if (!normalized) continue;
+        const key = `${normalized.location_id ?? ''}|${normalized.location_slug ?? ''}|${normalized.address ?? ''}|${normalized.phone ?? ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(normalized);
+    }
+    return deduped;
+};
+
+const collectClinicHours = (doctor) => {
+    if (!Array.isArray(doctor?.doctor_location_hours)) return [];
+
+    const deduped = [];
+    const seen = new Set();
+    for (const hour of doctor.doctor_location_hours) {
+        const normalized = {
+            location_id: toInt(hour?.location?.id ?? hour?.location_id),
+            day_number: toInt(hour?.day_number),
+            day_of_week: strOrNull(hour?.day_of_week),
+            opening_hour: strOrNull(hour?.opening_hour),
+            closing_hour: strOrNull(hour?.closing_hour),
+            formatted_hours: strOrNull(hour?.formatted_hours),
+            timezone: strOrNull(hour?.timezone),
+            timezone_abbreviation: strOrNull(hour?.timezone_abbreviation),
+        };
+
+        const key = `${normalized.location_id ?? ''}|${normalized.day_number ?? ''}|${normalized.opening_hour ?? ''}|${normalized.closing_hour ?? ''}|${normalized.timezone ?? ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(normalized);
+    }
+
+    deduped.sort((a, b) => {
+        const locA = a.location_id ?? Number.MAX_SAFE_INTEGER;
+        const locB = b.location_id ?? Number.MAX_SAFE_INTEGER;
+        if (locA !== locB) return locA - locB;
+        return (a.day_number ?? Number.MAX_SAFE_INTEGER) - (b.day_number ?? Number.MAX_SAFE_INTEGER);
+    });
+
+    return deduped;
+};
+
+const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRank, totalPages, totalResults }) => {
     const location = pickPrimaryLocation(doctor);
+    const clinicLocations = collectClinicLocations(doctor);
+    const clinicHours = collectClinicHours(doctor);
     const city = strOrNull(location?.city?.name) || strOrNull(doctor?.city_name);
     const province = strOrNull(location?.city?.province_name) || strOrNull(location?.city?.province_slug)?.toUpperCase();
     const country = strOrNull(location?.city?.country_name) || strOrNull(location?.city?.country_slug)?.toUpperCase();
@@ -213,13 +248,12 @@ const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRan
         total_pages: totalPages,
         total_results: totalResults,
         list_page_url: listPageUrl,
+        clinic_locations_count: clinicLocations.length,
+        clinic_locations: clinicLocations,
+        clinic_hours_count: clinicHours.length,
+        clinic_hours: clinicHours,
         scraped_at: new Date().toISOString(),
     };
-
-    if (includeRawInternalData) {
-        const extra = buildInternalDoctorExtra(doctor);
-        if (extra) output.internal_doctor_extra = extra;
-    }
     return output;
 };
 
@@ -228,13 +262,12 @@ await Actor.init();
 try {
     const input = (await Actor.getInput()) ?? {};
 
-    const resultsWanted = Math.max(1, toInt(input.results_wanted) ?? DEFAULT_RESULTS_WANTED);
-    const maxPages = Math.max(1, toInt(input.max_pages) ?? DEFAULT_MAX_PAGES);
+    const resultsWanted = Math.max(20, toInt(input.results_wanted) ?? DEFAULT_RESULTS_WANTED);
+    const maxPages = Math.max(2, toInt(input.max_pages) ?? DEFAULT_MAX_PAGES);
     const maxConcurrency = DEFAULT_MAX_CONCURRENCY;
     const maxRequestRetries = DEFAULT_MAX_RETRIES;
     const requestDelayMinMs = DEFAULT_DELAY_MIN_MS;
     const requestDelayMaxMs = DEFAULT_DELAY_MAX_MS;
-    const includeRawInternalData = true;
     const startUrls = normalizeStartUrls(input);
 
     const proxyConfiguration = input.proxyConfiguration
@@ -249,7 +282,6 @@ try {
         maxRequestRetries,
         requestDelayMinMs,
         requestDelayMaxMs,
-        includeRawInternalData,
         extractionSource: 'window.DATA.doctor_list_props.doctorPage.results',
         discoveredInternalEndpoints: ['/api/specialty/', '/api/banner/'],
         detailPagesVisited: false,
@@ -258,14 +290,18 @@ try {
     let pushedCount = 0;
     const pushedKeys = new Set();
     const crawledListUrls = new Set();
+    const crawlerInternalLog = log.child({ prefix: 'PlaywrightCrawler' });
+    crawlerInternalLog.setLevel(log.LEVELS.ERROR);
 
     const crawler = new PlaywrightCrawler({
+        log: crawlerInternalLog,
         launchContext: {
             launcher: firefox,
             userAgent: USER_AGENTS[randomInt(0, USER_AGENTS.length - 1)],
             launchOptions: { headless: true },
         },
         proxyConfiguration,
+        minConcurrency: 3,
         maxConcurrency,
         maxRequestRetries,
         navigationTimeoutSecs: 45,
@@ -340,12 +376,6 @@ try {
             const totalPages = pagePayload.totalPages ?? pageNumber;
             const totalResults = pagePayload.totalResults;
 
-            crawlerLog.info(`LIST ${currentUrl} -> ${pagePayload.doctors.length} doctors`, {
-                page: pageNumber,
-                totalPages,
-                totalResults,
-            });
-
             for (let i = 0; i < pagePayload.doctors.length; i += 1) {
                 if (pushedCount >= resultsWanted) break;
                 const doctor = pagePayload.doctors[i];
@@ -356,14 +386,18 @@ try {
                     pageRank: i + 1,
                     totalPages,
                     totalResults,
-                    includeRawInternalData,
                 });
-                const dedupeKey = strOrNull(record.profile_url) || strOrNull(record.doctor_id) || `${currentUrl}#${i}`;
+                const dedupeKey = strOrNull(record.doctor_id) || strOrNull(record.profile_url) || `${currentUrl}#${i}`;
                 if (pushedKeys.has(dedupeKey)) continue;
 
                 await Actor.pushData(record);
                 pushedKeys.add(dedupeKey);
                 pushedCount += 1;
+                log.info(`Pushed ${pushedCount}/${resultsWanted}`, {
+                    doctor_id: record.doctor_id,
+                    profile_url: record.profile_url,
+                    page: record.page,
+                });
             }
 
             if (pushedCount >= resultsWanted) return;

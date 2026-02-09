@@ -116,6 +116,26 @@
       "type": "string",
       "description": "Listing URL where doctor was captured"
     },
+    "clinic_locations_count": {
+      "title": "Clinic Locations Count",
+      "type": "integer",
+      "description": "Unique clinic locations count"
+    },
+    "clinic_locations": {
+      "title": "Clinic Locations",
+      "type": "array",
+      "description": "Deduplicated clinic locations"
+    },
+    "clinic_hours_count": {
+      "title": "Clinic Hours Count",
+      "type": "integer",
+      "description": "Unique weekly hour entries count"
+    },
+    "clinic_hours": {
+      "title": "Clinic Hours",
+      "type": "array",
+      "description": "Deduplicated clinic opening hours without nested location duplicates"
+    },
     "scraped_at": {
       "title": "Scraped At",
       "type": "string",
@@ -138,6 +158,8 @@
           "verified",
           "accepting_patients",
           "appointments_enabled",
+          "clinic_locations_count",
+          "clinic_hours_count",
           "page",
           "page_rank",
           "profile_url"
@@ -189,6 +211,14 @@
           "appointments_enabled": {
             "label": "Appointments",
             "format": "boolean"
+          },
+          "clinic_locations_count": {
+            "label": "Clinics",
+            "format": "number"
+          },
+          "clinic_hours_count": {
+            "label": "Hours Rows",
+            "format": "number"
           },
           "page": {
             "label": "Page",
