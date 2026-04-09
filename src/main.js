@@ -403,12 +403,13 @@ const loadEffectiveInput = async () => {
     const runtimeInput = sanitizeInputObject((await Actor.getInput()) ?? {});
 
     let fallbackInput = sanitizeInputObject((await Actor.getValue('INPUT')) ?? {});
-    if (!hasOwnProperties(fallbackInput)) {
+    if (!hasSearchCriteria(fallbackInput)) {
         try {
-            const rawInputFile = await readFile('INPUT.json', 'utf8');
-            fallbackInput = sanitizeInputObject(JSON.parse(rawInputFile));
+            const rawInputFile = (await readFile('INPUT.json', 'utf8')).replace(/^\uFEFF/, '');
+            const localFallback = sanitizeInputObject(JSON.parse(rawInputFile));
+            fallbackInput = { ...localFallback, ...fallbackInput };
         } catch {
-            fallbackInput = {};
+            // Ignore when INPUT.json is not available.
         }
     }
 

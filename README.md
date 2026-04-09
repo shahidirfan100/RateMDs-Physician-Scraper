@@ -8,6 +8,7 @@ Extract physician listings from RateMDs quickly and at scale. Collect structured
 - **Clinic location coverage** — Capture deduplicated clinic/location details for each physician.
 - **Working hours extraction** — Gather structured clinic schedule data by day and time.
 - **Pagination support** — Automatically continues across listing pages to reach your target volume.
+- **Clean deduplicated records** — Skips duplicate physicians and removes null/empty fields from output.
 - **Clean structured output** — Get consistent dataset items ready for analysis and export.
 - **Production-ready operation** — Designed for stable large-scale runs with practical defaults.
 
@@ -54,16 +55,36 @@ Each dataset item includes:
 | `specialty_slug` | String | Specialty slug value. |
 | `doctor_id` | Integer | Unique physician identifier. |
 | `doctor_slug` | String | Physician slug value. |
+| `full_name_specialty` | String | Combined display name with specialty label. |
+| `vanity_specialty` | String | Vanity specialty text when present. |
+| `specialty_id` | Integer | Specialty identifier from specialty metadata. |
+| `specialty_api_name` | String | Specialty display name from specialty metadata. |
 | `rating` | Number | Average physician rating. |
 | `review_count` | Integer | Total number of reviews. |
+| `sample_rating_comment` | String | Sample review snippet shown in listings. |
+| `sample_rating_pk` | Integer | Internal ID for sample review snippet. |
 | `profile_url` | String | Physician profile URL. |
 | `verified` | Boolean | Whether the profile is verified. |
+| `enhanced_ad_enabled` | Boolean | Enhanced profile/ad status flag. |
 | `accepting_patients` | Boolean | Accepting new patients flag. |
 | `accepting_virtual_appointments` | Boolean | Virtual appointments flag. |
+| `accepting_virtual_appointments_zocdoc` | Boolean | Virtual appointment support via Zocdoc. |
 | `appointments_enabled` | Boolean | Appointments enabled flag. |
 | `appointments_available` | Boolean | Appointments available flag. |
+| `appointments_type` | String | Booking mode/type indicator. |
+| `appointments_custom_url` | String | Custom booking URL when available. |
+| `appointments_enabled_zocdoc` | Boolean | Booking enabled via Zocdoc. |
+| `appointments_enabled_doctor_com` | Boolean | Booking enabled via Doctor.com. |
+| `zocdoc_doctor_profile_url` | String | Zocdoc profile URL when available. |
+| `doctor_com_id` | String | Doctor.com provider identifier. |
+| `is_doctor_com_provider_enhanced` | Boolean | Doctor.com enhanced provider flag. |
 | `ratings_disabled` | Boolean | Ratings disabled flag. |
 | `is_promoted_doctor` | Boolean | Promoted profile flag. |
+| `display_address_on_listings` | Boolean | Address visibility flag on listing cards. |
+| `display_call_now_button` | Boolean | Call-now button visibility flag. |
+| `accepting_patients_badge` | Boolean | Accepting-patients badge flag. |
+| `virtual_visits_badge` | Boolean | Virtual visits badge flag. |
+| `online_scheduling_badge` | Boolean | Online scheduling badge flag. |
 | `location` | String | Primary city and province/state string. |
 | `city` | String | City value. |
 | `province` | String | Province/state value. |
@@ -81,6 +102,7 @@ Each dataset item includes:
 | `clinic_locations` | Array | Deduplicated clinic location objects. |
 | `clinic_hours_count` | Integer | Number of unique clinic hour entries. |
 | `clinic_hours` | Array | Deduplicated clinic working hours records. |
+| `ga_provider_data` | Object | Listing analytics metadata for the provider card. |
 | `page` | Integer | Listing page number. |
 | `page_rank` | Integer | Rank of profile on that page. |
 | `total_pages` | Integer | Total available listing pages for the query. |
@@ -222,8 +244,8 @@ You can collect large volumes depending on available listings and your input lim
 ### Does the actor handle pagination automatically?
 Yes. It continues through listing pages until your target count is reached or page limit is hit.
 
-### Why are some fields empty for certain profiles?
-Some physicians do not publish complete public information. Missing values are returned as `null`.
+### Why are some fields missing for certain profiles?
+Some physicians do not publish complete public information. Empty fields are omitted instead of being returned as `null`.
 
 ### Can I collect data for multiple specialties or cities?
 Yes. Run separate tasks for each specialty-location pair or provide dedicated start URLs per run.
