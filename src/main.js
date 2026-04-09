@@ -1,16 +1,12 @@
 import { Actor } from 'apify';
 import log from '@apify/log';
-import { HeaderGenerator } from 'header-generator';
-import { PlaywrightCrawler } from 'crawlee';
-import { firefox } from 'playwright';
+import { gotScraping } from 'crawlee';
+import { readFile } from 'node:fs/promises';
 
 const BASE_URL = 'https://www.ratemds.com';
 const DEFAULT_RESULTS_WANTED = 20;
 const DEFAULT_MAX_PAGES = 10;
-const DEFAULT_MAX_CONCURRENCY = 5;
-const DEFAULT_MAX_RETRIES = 4;
-const DEFAULT_DELAY_MIN_MS = 60;
-const DEFAULT_DELAY_MAX_MS = 180;
+const DEFAULT_RETRIES = 2;
 
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
@@ -18,29 +14,30 @@ const USER_AGENTS = [
     'Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0',
 ];
 
-const TRACKER_PATTERNS = [
-    'google-analytics.com',
-    'googletagmanager.com',
-    'doubleclick.net',
-    'facebook.net',
-    'adservice.google.com',
-    'adtrafficquality.google',
-    'rubiconproject.com',
-    'pubmatic.com',
-    'openwebmp.com',
-    'amazon-adsystem.com',
-];
-
-const headerGenerator = new HeaderGenerator({
-    browsers: [{ name: 'firefox', minVersion: 120, maxVersion: 147 }],
-    devices: ['desktop'],
-    operatingSystems: ['windows', 'macos', 'linux'],
-    locales: ['en-US'],
-});
-
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const randomInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const randomDelay = (minMs, maxMs) => delay(randomInt(minMs, maxMs));
+const hasOwnProperties = (value) => Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+const sanitizeInputObject = (value) => {
+    if (!value || typeof value !== 'object') return {};
+    const cleaned = {};
+    for (const [key, raw] of Object.entries(value)) {
+        if (raw === undefined || raw === null) continue;
+        if (typeof raw === 'string' && raw.trim() === '') continue;
+        if (Array.isArray(raw) && raw.length === 0) continue;
+        cleaned[key] = raw;
+    }
+    return cleaned;
+};
+const hasSearchCriteria = (value) => {
+    if (!value || typeof value !== 'object') return false;
+    const hasStartUrls = Array.isArray(value.startUrls) && value.startUrls.length > 0;
+    return Boolean(
+        strOrNull(value.startUrl)
+        || strOrNull(value.url)
+        || hasStartUrls
+        || strOrNull(value.specialty)
+        || strOrNull(value.location),
+    );
+};
 
 const toAbs = (href) => {
     if (!href) return null;
@@ -54,7 +51,7 @@ const toAbs = (href) => {
 const strOrNull = (value) => {
     if (value === undefined || value === null) return null;
     const normalized = String(value).trim();
-    return normalized.length ? normalized : null;
+    return normalized.length > 0 ? normalized : null;
 };
 
 const toInt = (value) => {
@@ -67,9 +64,10 @@ const toFloat = (value) => {
     return Number.isFinite(num) ? num : null;
 };
 
+const boolOrNull = (value) => (typeof value === 'boolean' ? value : null);
+
 const normalizeStartUrls = (input) => {
     const urls = [];
-
     const add = (value) => {
         if (!value) return;
         if (typeof value === 'string') {
@@ -97,9 +95,23 @@ const normalizeStartUrls = (input) => {
     return [...new Set(urls)];
 };
 
-const parsePagePayload = (windowData) => {
-    const doctorPage = windowData?.doctor_list_props?.doctorPage;
+const extractDoctorListProps = (html) => {
+    const match = html.match(/window\.DATA\.doctor_list_props\s*=\s*JSON\.parse\("([\s\S]*?)"\);/);
+    if (!match) return null;
+
+    try {
+        const encodedJson = match[1];
+        const decodedJson = JSON.parse(`"${encodedJson}"`);
+        return JSON.parse(decodedJson);
+    } catch {
+        return null;
+    }
+};
+
+const parsePagePayload = (doctorListProps) => {
+    const doctorPage = doctorListProps?.doctorPage;
     if (!doctorPage || !Array.isArray(doctorPage.results)) return null;
+
     return {
         currentPage: toInt(doctorPage.current_page),
         totalPages: toInt(doctorPage.total_pages),
@@ -107,14 +119,6 @@ const parsePagePayload = (windowData) => {
         doctors: doctorPage.results,
     };
 };
-
-const pickPrimaryLocation = (doctor) => (
-    doctor?.location
-    || doctor?.default_location
-    || doctor?.doctor_locations_on_display?.[0]?.location
-    || doctor?.doctor_locations?.[0]?.location
-    || null
-);
 
 const normalizeAddress = (location) => {
     if (!location) return null;
@@ -126,11 +130,20 @@ const normalizeAddress = (location) => {
     return [strOrNull(location.address), suite, strOrNull(locality)].filter(Boolean).join(', ') || null;
 };
 
+const pickPrimaryLocation = (doctor) => (
+    doctor?.location
+    || doctor?.default_location
+    || doctor?.doctor_locations_on_display?.[0]?.location
+    || doctor?.doctor_locations?.[0]?.location
+    || null
+);
+
 const normalizeClinicLocation = (location) => {
     if (!location) return null;
     const city = strOrNull(location.city?.name);
     const province = strOrNull(location.city?.province_name) || strOrNull(location.city?.province_slug)?.toUpperCase();
     const country = strOrNull(location.city?.country_name) || strOrNull(location.city?.country_slug)?.toUpperCase();
+
     return {
         location_id: toInt(location.id),
         location_slug: strOrNull(location.slug),
@@ -143,8 +156,8 @@ const normalizeClinicLocation = (location) => {
         postal_code: strOrNull(location.postal_code),
         phone: strOrNull(location.doc_location_phone_number || location.phone_number),
         website: strOrNull(location.website),
-        latitude: location.latitude ?? null,
-        longitude: location.longitude ?? null,
+        latitude: toFloat(location.latitude),
+        longitude: toFloat(location.longitude),
         map_url: strOrNull(location.map),
         location_url: toAbs(location.url),
     };
@@ -163,11 +176,12 @@ const collectClinicLocations = (doctor) => {
     for (const location of sources) {
         const normalized = normalizeClinicLocation(location);
         if (!normalized) continue;
-        const key = `${normalized.location_id ?? ''}|${normalized.location_slug ?? ''}|${normalized.address ?? ''}|${normalized.phone ?? ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const dedupeKey = `${normalized.location_id ?? ''}|${normalized.location_slug ?? ''}|${normalized.address ?? ''}|${normalized.phone ?? ''}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         deduped.push(normalized);
     }
+
     return deduped;
 };
 
@@ -188,9 +202,9 @@ const collectClinicHours = (doctor) => {
             timezone_abbreviation: strOrNull(hour?.timezone_abbreviation),
         };
 
-        const key = `${normalized.location_id ?? ''}|${normalized.day_number ?? ''}|${normalized.opening_hour ?? ''}|${normalized.closing_hour ?? ''}|${normalized.timezone ?? ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const dedupeKey = `${normalized.location_id ?? ''}|${normalized.day_number ?? ''}|${normalized.opening_hour ?? ''}|${normalized.closing_hour ?? ''}|${normalized.timezone ?? ''}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
         deduped.push(normalized);
     }
 
@@ -204,32 +218,89 @@ const collectClinicHours = (doctor) => {
     return deduped;
 };
 
-const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRank, totalPages, totalResults }) => {
+const pruneValue = (value) => {
+    if (value === null || value === undefined) return undefined;
+
+    if (typeof value === 'string') {
+        const cleaned = value.trim();
+        return cleaned.length > 0 ? cleaned : undefined;
+    }
+
+    if (Array.isArray(value)) {
+        const cleanedArray = value
+            .map(pruneValue)
+            .filter((item) => item !== undefined);
+        if (cleanedArray.length === 0) return undefined;
+
+        const deduped = [];
+        const seen = new Set();
+        for (const item of cleanedArray) {
+            const key = typeof item === 'object' ? JSON.stringify(item) : String(item);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            deduped.push(item);
+        }
+        return deduped.length > 0 ? deduped : undefined;
+    }
+
+    if (typeof value === 'object') {
+        const cleanedObject = {};
+        for (const [key, nestedValue] of Object.entries(value)) {
+            const cleanedValue = pruneValue(nestedValue);
+            if (cleanedValue !== undefined) cleanedObject[key] = cleanedValue;
+        }
+        return Object.keys(cleanedObject).length > 0 ? cleanedObject : undefined;
+    }
+
+    return value;
+};
+
+const buildDoctorRecord = ({ doctor, listPageUrl, page, pageRank, totalPages, totalResults, specialtyMap }) => {
     const location = pickPrimaryLocation(doctor);
     const clinicLocations = collectClinicLocations(doctor);
     const clinicHours = collectClinicHours(doctor);
     const city = strOrNull(location?.city?.name) || strOrNull(doctor?.city_name);
     const province = strOrNull(location?.city?.province_name) || strOrNull(location?.city?.province_slug)?.toUpperCase();
     const country = strOrNull(location?.city?.country_name) || strOrNull(location?.city?.country_slug)?.toUpperCase();
+    const specialtySlug = strOrNull(doctor?.specialty);
+    const specialtyMeta = specialtySlug ? specialtyMap.get(specialtySlug) : null;
 
-    const output = {
+    return {
         name: strOrNull(doctor?.full_name || doctor?.name),
+        full_name_specialty: strOrNull(doctor?.full_name_specialty),
         specialty: strOrNull(doctor?.specialty_name || doctor?.specialty),
-        specialty_slug: strOrNull(doctor?.specialty),
+        specialty_slug: specialtySlug,
+        specialty_id: toInt(specialtyMeta?.id),
+        specialty_api_name: strOrNull(specialtyMeta?.name),
+        vanity_specialty: strOrNull(doctor?.vanity_specialty),
         doctor_id: toInt(doctor?.id),
         doctor_slug: strOrNull(doctor?.slug),
         rating: toFloat(doctor?.rating?.average),
         review_count: toInt(doctor?.rating?.count),
+        sample_rating_comment: strOrNull(doctor?.sample_rating_comment),
+        sample_rating_pk: toInt(doctor?.sample_rating_pk),
         profile_url: toAbs(doctor?.url),
-        verified: Boolean(doctor?.verified),
-        accepting_patients: typeof doctor?.accepting_patients === 'boolean' ? doctor.accepting_patients : null,
-        accepting_virtual_appointments: typeof doctor?.accepting_virtual_appointments === 'boolean'
-            ? doctor.accepting_virtual_appointments
-            : null,
-        appointments_enabled: typeof doctor?.appointments_enabled === 'boolean' ? doctor.appointments_enabled : null,
-        appointments_available: typeof doctor?.appointments_available === 'boolean' ? doctor.appointments_available : null,
-        ratings_disabled: typeof doctor?.ratings_disabled === 'boolean' ? doctor.ratings_disabled : null,
-        is_promoted_doctor: typeof doctor?.is_promoted_doctor === 'boolean' ? doctor.is_promoted_doctor : null,
+        verified: boolOrNull(doctor?.verified),
+        enhanced_ad_enabled: boolOrNull(doctor?.enhanced_ad_enabled),
+        accepting_patients: boolOrNull(doctor?.accepting_patients),
+        accepting_virtual_appointments: boolOrNull(doctor?.accepting_virtual_appointments),
+        accepting_virtual_appointments_zocdoc: boolOrNull(doctor?.accepting_virtual_appointments_zocdoc),
+        appointments_type: strOrNull(doctor?.appointments_type),
+        appointments_enabled: boolOrNull(doctor?.appointments_enabled),
+        appointments_available: boolOrNull(doctor?.appointments_available),
+        appointments_custom_url: strOrNull(doctor?.appointments_custom_url),
+        appointments_enabled_zocdoc: boolOrNull(doctor?.appointments_enabled_zocdoc),
+        appointments_enabled_doctor_com: boolOrNull(doctor?.appointments_enabled_doctor_com),
+        zocdoc_doctor_profile_url: strOrNull(doctor?.zocdoc_doctor_profile_url),
+        doctor_com_id: strOrNull(doctor?.doctor_com_id),
+        is_doctor_com_provider_enhanced: boolOrNull(doctor?.is_doctor_com_provider_enhanced),
+        ratings_disabled: boolOrNull(doctor?.ratings_disabled),
+        is_promoted_doctor: boolOrNull(doctor?.is_promoted_doctor),
+        display_address_on_listings: boolOrNull(doctor?.display_address_on_listings),
+        display_call_now_button: boolOrNull(doctor?.display_call_now_button),
+        accepting_patients_badge: boolOrNull(doctor?.accepting_patients_badge),
+        virtual_visits_badge: boolOrNull(doctor?.virtual_visits_badge),
+        online_scheduling_badge: boolOrNull(doctor?.online_scheduling_badge),
         location: [city, province].filter(Boolean).join(', ') || null,
         city,
         province,
@@ -240,8 +311,8 @@ const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRan
         website: strOrNull(location?.website),
         location_name: strOrNull(location?.name),
         location_category: strOrNull(location?.category),
-        location_latitude: location?.latitude ?? null,
-        location_longitude: location?.longitude ?? null,
+        location_latitude: toFloat(location?.latitude),
+        location_longitude: toFloat(location?.longitude),
         location_map: strOrNull(location?.map),
         page,
         page_rank: pageRank,
@@ -252,174 +323,225 @@ const normalizeDoctorFromInternalPayload = ({ doctor, listPageUrl, page, pageRan
         clinic_locations: clinicLocations,
         clinic_hours_count: clinicHours.length,
         clinic_hours: clinicHours,
+        ga_provider_data: doctor?.ga_provider_data ?? null,
         scraped_at: new Date().toISOString(),
     };
-    return output;
+};
+
+const fetchBody = async ({ url, proxyConfiguration, acceptHeader, referer }) => {
+    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+    const userAgent = USER_AGENTS[randomInt(0, USER_AGENTS.length - 1)];
+
+    const response = await gotScraping({
+        url,
+        proxyUrl,
+        throwHttpErrors: false,
+        timeout: { request: 45_000 },
+        retry: { limit: 0 },
+        headers: {
+            'user-agent': userAgent,
+            accept: acceptHeader,
+            'accept-language': 'en-US,en;q=0.9',
+            referer,
+            'cache-control': 'no-cache',
+            pragma: 'no-cache',
+        },
+    });
+
+    if (response.statusCode >= 400) {
+        throw new Error(`HTTP ${response.statusCode} for ${url}`);
+    }
+
+    return response.body;
+};
+
+const fetchWithRetries = async ({ url, proxyConfiguration, acceptHeader, referer, retries = DEFAULT_RETRIES }) => {
+    let attempt = 0;
+    while (attempt <= retries) {
+        try {
+            return await fetchBody({ url, proxyConfiguration, acceptHeader, referer });
+        } catch (error) {
+            if (attempt >= retries) throw error;
+            log.warning(`Request retry ${attempt + 1}/${retries} for ${url}: ${error.message}`);
+            await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+            attempt += 1;
+        }
+    }
+    throw new Error(`Failed to fetch ${url}`);
+};
+
+const fetchSpecialtyMap = async (proxyConfiguration) => {
+    const specialtyMap = new Map();
+    const endpoint = `${BASE_URL}/api/specialty/`;
+
+    try {
+        const body = await fetchWithRetries({
+            url: endpoint,
+            proxyConfiguration,
+            acceptHeader: 'application/json, text/plain, */*',
+            referer: `${BASE_URL}/`,
+            retries: 1,
+        });
+        const payload = JSON.parse(body);
+        for (const item of payload?.results ?? []) {
+            const slug = strOrNull(item?.slug);
+            if (!slug) continue;
+            specialtyMap.set(slug, {
+                id: toInt(item?.id),
+                name: strOrNull(item?.name),
+            });
+        }
+        log.info(`Loaded specialty metadata for ${specialtyMap.size} specialties from /api/specialty/.`);
+    } catch (error) {
+        log.warning(`Could not load /api/specialty/ metadata: ${error.message}`);
+    }
+
+    return specialtyMap;
+};
+
+const loadEffectiveInput = async () => {
+    const runtimeInput = sanitizeInputObject((await Actor.getInput()) ?? {});
+
+    let fallbackInput = sanitizeInputObject((await Actor.getValue('INPUT')) ?? {});
+    if (!hasOwnProperties(fallbackInput)) {
+        try {
+            const rawInputFile = await readFile('INPUT.json', 'utf8');
+            fallbackInput = sanitizeInputObject(JSON.parse(rawInputFile));
+        } catch {
+            fallbackInput = {};
+        }
+    }
+
+    if (hasSearchCriteria(runtimeInput)) {
+        return { input: runtimeInput, source: 'runtime' };
+    }
+
+    if (hasSearchCriteria(fallbackInput)) {
+        return {
+            input: { ...fallbackInput, ...runtimeInput },
+            source: hasOwnProperties(runtimeInput) ? 'runtime + INPUT.json fallback' : 'INPUT.json fallback',
+        };
+    }
+
+    if (hasOwnProperties(runtimeInput)) {
+        return { input: runtimeInput, source: 'runtime' };
+    }
+
+    if (hasOwnProperties(fallbackInput)) {
+        return { input: fallbackInput, source: 'INPUT.json fallback' };
+    }
+
+    return { input: {}, source: 'empty' };
 };
 
 await Actor.init();
 
 try {
-    const input = (await Actor.getInput()) ?? {};
-
-    const resultsWanted = Math.max(20, toInt(input.results_wanted) ?? DEFAULT_RESULTS_WANTED);
-    const maxPages = Math.max(2, toInt(input.max_pages) ?? DEFAULT_MAX_PAGES);
-    const maxConcurrency = DEFAULT_MAX_CONCURRENCY;
-    const maxRequestRetries = DEFAULT_MAX_RETRIES;
-    const requestDelayMinMs = DEFAULT_DELAY_MIN_MS;
-    const requestDelayMaxMs = DEFAULT_DELAY_MAX_MS;
+    const { input, source: inputSource } = await loadEffectiveInput();
+    const resultsWanted = Math.max(1, toInt(input.results_wanted) ?? DEFAULT_RESULTS_WANTED);
+    const configuredMaxPages = Math.max(1, toInt(input.max_pages) ?? DEFAULT_MAX_PAGES);
+    const minimumPagesForTarget = Math.max(1, Math.ceil(resultsWanted / 10));
+    const maxPages = Math.max(configuredMaxPages, minimumPagesForTarget);
     const startUrls = normalizeStartUrls(input);
 
     const proxyConfiguration = input.proxyConfiguration
         ? await Actor.createProxyConfiguration({ ...input.proxyConfiguration })
         : undefined;
 
-    log.info('Starting RateMDs fast internal-payload scraper', {
+    log.info('Starting RateMDs API-based extractor via got-scraping.', {
+        inputSource,
         startUrls,
         resultsWanted,
+        configuredMaxPages,
+        minimumPagesForTarget,
         maxPages,
-        maxConcurrency,
-        maxRequestRetries,
-        requestDelayMinMs,
-        requestDelayMaxMs,
-        extractionSource: 'window.DATA.doctor_list_props.doctorPage.results',
-        discoveredInternalEndpoints: ['/api/specialty/', '/api/banner/'],
-        detailPagesVisited: false,
+        extractionSource: 'window.DATA.doctor_list_props (embedded JSON payload)',
+        auxiliaryApiEndpoints: ['/api/specialty/', '/api/banner/'],
+        browserNeeded: false,
     });
 
+    const specialtyMap = await fetchSpecialtyMap(proxyConfiguration);
+
     let pushedCount = 0;
+    let duplicateCount = 0;
     const pushedKeys = new Set();
-    const crawledListUrls = new Set();
-    const crawlerInternalLog = log.child({ prefix: 'PlaywrightCrawler' });
-    crawlerInternalLog.setLevel(log.LEVELS.ERROR);
+    const visitedListUrls = new Set();
 
-    const crawler = new PlaywrightCrawler({
-        log: crawlerInternalLog,
-        launchContext: {
-            launcher: firefox,
-            userAgent: USER_AGENTS[randomInt(0, USER_AGENTS.length - 1)],
-            launchOptions: { headless: true },
-        },
-        proxyConfiguration,
-        minConcurrency: 3,
-        maxConcurrency,
-        maxRequestRetries,
-        navigationTimeoutSecs: 45,
-        requestHandlerTimeoutSecs: 90,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 80,
-            sessionOptions: {
-                maxUsageCount: 20,
-                maxErrorScore: 3,
-            },
-        },
-        preNavigationHooks: [
-            async ({ page }, gotoOptions) => {
-                const headers = headerGenerator.getHeaders();
-                await page.setExtraHTTPHeaders({
-                    accept: headers.accept ?? 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'accept-language': headers['accept-language'] ?? 'en-US,en;q=0.9',
-                    'cache-control': 'no-cache',
-                    pragma: 'no-cache',
-                    'upgrade-insecure-requests': '1',
-                    'sec-fetch-dest': 'document',
-                    'sec-fetch-mode': 'navigate',
-                    'sec-fetch-site': 'none',
+    for (const startUrl of startUrls) {
+        if (pushedCount >= resultsWanted) break;
+        const currentUrl = new URL(startUrl);
+        let nextPage = toInt(currentUrl.searchParams.get('page')) ?? 1;
+
+        while (pushedCount < resultsWanted) {
+            if (nextPage > maxPages) break;
+            currentUrl.searchParams.set('page', String(nextPage));
+            const listUrl = currentUrl.href;
+            if (visitedListUrls.has(listUrl)) break;
+            visitedListUrls.add(listUrl);
+
+            let html;
+            try {
+                html = await fetchWithRetries({
+                    url: listUrl,
+                    proxyConfiguration,
+                    acceptHeader: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    referer: `${BASE_URL}/`,
                 });
-
-                if (!page.__resourceBlockerInstalled) {
-                    page.__resourceBlockerInstalled = true;
-                    await page.route('**/*', (route) => {
-                        const req = route.request();
-                        const reqUrl = new URL(req.url());
-                        const hostname = reqUrl.hostname.toLowerCase();
-                        const type = req.resourceType();
-                        const normalizedUrl = req.url().toLowerCase();
-
-                        const isRateMdsHost = hostname === 'ratemds.com'
-                            || hostname === 'www.ratemds.com'
-                            || hostname.endsWith('.ratemds.com');
-
-                        if (!isRateMdsHost) return route.abort();
-                        if (['image', 'font', 'media', 'stylesheet'].includes(type)) return route.abort();
-                        if (normalizedUrl.includes('/mod_pagespeed_beacon')) return route.abort();
-                        if (TRACKER_PATTERNS.some((pattern) => normalizedUrl.includes(pattern))) return route.abort();
-                        return route.continue();
-                    });
-                }
-
-                gotoOptions.waitUntil = 'domcontentloaded';
-                await randomDelay(requestDelayMinMs, requestDelayMaxMs);
-            },
-        ],
-
-        async requestHandler({ page, request, enqueueLinks, log: crawlerLog }) {
-            if (pushedCount >= resultsWanted) return;
-
-            const currentUrl = request.loadedUrl || request.url;
-            if (crawledListUrls.has(currentUrl)) return;
-            crawledListUrls.add(currentUrl);
-
-            let pagePayload = parsePagePayload(await page.evaluate(() => window.DATA ?? null));
-            if (!pagePayload) {
-                await delay(1200);
-                pagePayload = parsePagePayload(await page.evaluate(() => window.DATA ?? null));
+            } catch (error) {
+                log.error(`Failed to fetch list page: ${listUrl}`, { error: error.message });
+                break;
             }
 
+            const doctorListProps = extractDoctorListProps(html);
+            const pagePayload = parsePagePayload(doctorListProps);
             if (!pagePayload) {
-                crawlerLog.warning(`No internal doctor payload found at ${currentUrl}`);
-                return;
+                log.warning(`Doctor payload was not found on ${listUrl}`);
+                break;
+            }
+            if (!Array.isArray(pagePayload.doctors) || pagePayload.doctors.length === 0) {
+                log.info(`No doctors found on ${listUrl}`);
+                break;
             }
 
-            const pageNumber = pagePayload.currentPage ?? toInt(new URL(currentUrl).searchParams.get('page')) ?? 1;
+            const pageNumber = pagePayload.currentPage ?? nextPage;
             const totalPages = pagePayload.totalPages ?? pageNumber;
             const totalResults = pagePayload.totalResults;
 
             for (let i = 0; i < pagePayload.doctors.length; i += 1) {
                 if (pushedCount >= resultsWanted) break;
                 const doctor = pagePayload.doctors[i];
-                const record = normalizeDoctorFromInternalPayload({
+                const fallbackKey = `${listUrl}#${i}`;
+                const dedupeKey = strOrNull(doctor?.id) || strOrNull(doctor?.slug) || strOrNull(doctor?.url) || fallbackKey;
+                if (pushedKeys.has(dedupeKey)) {
+                    duplicateCount += 1;
+                    continue;
+                }
+
+                const rawRecord = buildDoctorRecord({
                     doctor,
-                    listPageUrl: currentUrl,
+                    listPageUrl: listUrl,
                     page: pageNumber,
                     pageRank: i + 1,
                     totalPages,
                     totalResults,
+                    specialtyMap,
                 });
-                const dedupeKey = strOrNull(record.doctor_id) || strOrNull(record.profile_url) || `${currentUrl}#${i}`;
-                if (pushedKeys.has(dedupeKey)) continue;
 
-                await Actor.pushData(record);
+                const cleanedRecord = pruneValue(rawRecord);
+                if (!cleanedRecord || typeof cleanedRecord !== 'object') continue;
+
+                await Actor.pushData(cleanedRecord);
                 pushedKeys.add(dedupeKey);
                 pushedCount += 1;
-                log.info(`Pushed ${pushedCount}/${resultsWanted}`, {
-                    doctor_id: record.doctor_id,
-                    profile_url: record.profile_url,
-                    page: record.page,
-                });
             }
 
-            if (pushedCount >= resultsWanted) return;
-            if (pageNumber >= maxPages) return;
-            if (pageNumber >= totalPages) return;
+            if (pushedCount >= resultsWanted) break;
+            if (pageNumber >= totalPages) break;
+            nextPage = pageNumber + 1;
+        }
+    }
 
-            const nextUrl = new URL(currentUrl);
-            nextUrl.searchParams.set('page', String(pageNumber + 1));
-            if (!crawledListUrls.has(nextUrl.href)) {
-                await enqueueLinks({
-                    urls: [nextUrl.href],
-                });
-            }
-        },
-
-        failedRequestHandler: async ({ request, log: crawlerLog }, error) => {
-            crawlerLog.error(`Failed request: ${request.url}`, { error: error.message });
-        },
-    });
-
-    await crawler.run(startUrls.map((url) => ({ url })));
-    log.info(`Finished. Pushed ${pushedCount} records.`);
+    log.info(`Finished. Pushed ${pushedCount} unique records. Skipped ${duplicateCount} duplicate records.`);
 } finally {
     await Actor.exit();
 }
